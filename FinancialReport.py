@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
+import plotly.graph_objects as go
 
-from matplotlib.backends.backend_pdf import PdfPages
 from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 
@@ -145,6 +145,55 @@ def get_month_data(data, month, year):
 
 def get_year_data(data, year):
     return data[data['Year'] == year]
+
+
+def render_sankey(doc, context, tmpdirname, data_month: pd.DataFrame):
+
+    def render_sankey_separate(column, field_abbr):
+        incomes = get_incomes(data_month, column=column)
+        expenses = get_expenses(data_month, column=column)
+
+        income_sum_cats = incomes.groupby(['Category']).agg({column: 'sum'})
+        income_sum_cats = np.round(income_sum_cats, 2)
+        income_sum_cats = income_sum_cats.sort_values(by=[column], ascending=False)
+        income_sum_cats = income_sum_cats[income_sum_cats[column] > 0]
+        income_sum_cats['Category'] = income_sum_cats.index
+
+        expense_sum_cats = expenses.groupby(['Category']).agg({column: 'sum'})
+        expense_sum_cats = np.round(expense_sum_cats, 2)
+        expense_sum_cats *= -1
+        expense_sum_cats = expense_sum_cats.sort_values(by=[column], ascending=False)
+        expense_sum_cats = expense_sum_cats[expense_sum_cats[column] > 0]
+        expense_sum_cats['Category'] = expense_sum_cats.index
+
+        income_labels = income_sum_cats['Category'].tolist()
+        expense_labels = expense_sum_cats['Category'].tolist()
+
+        labels_list = income_labels + expense_labels + ['Total Available']
+        total_node = len(labels_list) - 1
+
+        # Create Sankey
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=15,
+                thickness=20,
+                line=dict(color="black", width=0.5),
+                label=labels_list
+            ),
+            link=dict(
+                source=[i for i in range(len(income_labels))] + [total_node] * len(expense_labels),
+                target=[total_node] * len(income_labels) + [i + len(income_labels) for i in range(len(expense_labels))],
+                value=income_sum_cats[column].tolist() + expense_sum_cats[column].tolist()
+            ))])
+
+        filename = f'{tmpdirname}/sankey_{field_abbr}.png'
+        fig.write_image(filename, width=800, height=600, scale=2)
+        context[f'sankey_{field_abbr}'] = InlineImage(doc, filename, width=Mm(160))
+
+    render_sankey_separate('Nick', 'ni')
+    render_sankey_separate('Tabea', 'ta')
+
+    return context
 
 
 def render_income(context, data_month: pd.DataFrame):
@@ -357,6 +406,12 @@ def render_template(month, year, data, reports_dir, template_name="Report_Templa
         context = {'current_month': str(month),
                    'current_year': str(year)}
 
+        # Get the earliest date
+        earliest_date = data['Date_Time'].min()
+        # Counts the number of months between the earliest date and the current date
+        count_months = (year - earliest_date.year) * 12 + (month - earliest_date.month)
+        context['count_months'] = count_months
+
         df = filter_past_only(month, year, data)
 
         context, col = normalize_categories(context, df['Category'])
@@ -364,6 +419,8 @@ def render_template(month, year, data, reports_dir, template_name="Report_Templa
         # Get month data
         current_month_data = get_month_data(df, month, year)
         current_year_data = get_year_data(df, year)
+
+        context = render_sankey(doc, context, tmpdirname, current_month_data)
 
         context = render_income(context, current_month_data)
         context = render_expenses(doc, context, tmpdirname, current_month_data)
