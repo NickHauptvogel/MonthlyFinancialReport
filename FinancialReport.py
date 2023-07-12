@@ -12,6 +12,12 @@ from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 
 
+def hex_to_rgba(hex: str, opacity=0.5):
+    hex = hex.lstrip('#')
+    r, g, b = tuple(int(hex[i:i+2], 16) for i in (0, 2, 4))
+    return f'rgba({r}, {g}, {b}, {opacity})'
+
+
 def filter_past_only(month, year, df):
     # Include only past expenses
     next_year = int(year)
@@ -24,6 +30,17 @@ def filter_past_only(month, year, df):
     df = df[df['Date_Time'] < last_date]
 
     return df
+
+
+def get_color_map(data_dir, file_name="color_mapping.xlsx", parent_category_sheet="parent_category",
+                  tricount_sheet="tricount_category"):
+    norm_color_map = pd.read_excel(os.path.join(data_dir, file_name), sheet_name=parent_category_sheet)
+    norm_color_map = norm_color_map.set_index('parent_category')
+
+    tricount_color_map = pd.read_excel(os.path.join(data_dir, file_name), sheet_name=tricount_sheet)
+    tricount_color_map = tricount_color_map.set_index('tricount_category')
+
+    return norm_color_map, tricount_color_map
 
 
 def read_tricount_data(data_dir, filename="data.csv") -> pd.DataFrame:
@@ -81,51 +98,40 @@ def read_tricount_data(data_dir, filename="data.csv") -> pd.DataFrame:
 
 
 def get_trend_cats():
-    return ['Charges', 'Groceries', 'Shopping', 'Leisure', 'Urlaub']
+    return ['Charges', 'Groceries', 'Shopping', 'Leisure', 'Urlaub']  # TODO In Excel sheet
 
 
-def get_num_categories():
-    return 9  # Change to automatic
-
-
-def normalize_categories(context, s_categories):
-    normalize_dict = {
-        'Charges': ['Rent & Charges', 'Abonnements', 'Geschäftsreise', 'Healthcare', 'Internet & Telefon',
-                    'Shares & Fonds'],
-        'Groceries': ['Groceries', 'Penny', 'Rossmann', 'Rewe'],
-        'Shopping': ['Accommodation', 'Shopping', 'Hobby'],
-        'Presents': ['Presents'],
-        'Leisure': ['Leisure', 'Date', 'Eating out', 'Sinnlos Aktivitäten'],
-        'Education': ['Education', 'Denmark Preparation', 'Studies'],
-        'Transport': ['Transport'],
-        'Salary': ['Salary'],
-        'Child Support': ['Child Support']
-    }
-    normalize_dict_reverse = {}
-    for k, vs in normalize_dict.items():
-        for v in vs:
-            normalize_dict_reverse[v] = k
-    normalize_dict['Misc'] = set()
-    normalize_dict['Urlaub'] = set()
+def normalize_categories(context, s_categories, norm_color_map, tricount_color_map):
+    urlaub_set = set()
+    misc_set = set()
 
     def insert_norm_category(cell):
         if 'Urlaub' in str(cell):
             value = 'Urlaub'
-            normalize_dict['Urlaub'].add(cell)
+            urlaub_set.add(cell)
         elif pd.isnull(cell):
             value = 'Misc'
         else:
-            value = normalize_dict_reverse.get(cell)
-            if value is None:
-                normalize_dict['Misc'].add(cell)
+            try:
+                # Get value from dataframe
+                value = tricount_color_map.loc[cell]['parent_category']
+            except KeyError:
+                misc_set.add(cell)
                 value = 'Misc'
         cell = value
         return cell
 
     s_categories_norm = s_categories.apply(insert_norm_category)
 
-    for key in normalize_dict.keys():
-        context[f'{key.lower()}_list'] = "{0}".format(', '.join(map(str, normalize_dict[key])))
+    # Get distinct parent categories from norm_color_map
+    parent_categories = norm_color_map.index.unique()
+    for parent_category in parent_categories:
+        # All values in tricount_color_map that have parent_category as parent_category
+        context[f'{parent_category.lower()}_list'] = tricount_color_map[
+            tricount_color_map['parent_category'] == parent_category].index.tolist()
+
+    context['urlaub_list'] = list(urlaub_set)
+    context['misc_list'] = list(misc_set)
 
     return context, s_categories_norm
 
@@ -147,8 +153,7 @@ def get_year_data(data, year):
     return data[data['Year'] == year]
 
 
-def render_sankey(doc, context, tmpdirname, data_month: pd.DataFrame):
-
+def render_sankey(doc, context, tmpdirname, data_month: pd.DataFrame, tricount_color_map: pd.DataFrame):
     def render_sankey_separate(column, field_abbr):
         incomes = get_incomes(data_month, column=column)
         expenses = get_expenses(data_month, column=column)
@@ -166,24 +171,37 @@ def render_sankey(doc, context, tmpdirname, data_month: pd.DataFrame):
         expense_sum_cats = expense_sum_cats[expense_sum_cats[column] > 0]
         expense_sum_cats['Category'] = expense_sum_cats.index
 
-        income_labels = income_sum_cats['Category'].tolist()
-        expense_labels = expense_sum_cats['Category'].tolist()
+        # Combine income and expense categories with their values
+        income_labels = [f'{label} ({income_sum_cats.loc[label][column]}€)' for label in income_sum_cats.index]
+        income_names = [label for label in income_sum_cats.index]
+        expense_labels = [f'{label} ({expense_sum_cats.loc[label][column]}€)' for label in expense_sum_cats.index]
+        expense_names = [label for label in expense_sum_cats.index]
 
-        labels_list = income_labels + expense_labels + ['Total Available']
-        total_node = len(labels_list) - 1
+        labels_list = income_labels + expense_labels
+        names_list = income_names + expense_names
+        # Use grey for as default
+        node_colors = [tricount_color_map.loc[label]['color'] if label in tricount_color_map.index else '#909090' for label in names_list]
+        link_colors = [hex_to_rgba(c) for c in node_colors]
+
+        total_node = len(labels_list)
+        saldo = incomes[column].sum() + expenses[column].sum()
+        labels_list.append('Balance (' + str(round(saldo, 2)) + '€)')
+        node_colors.append('#F0F0F0')
 
         # Create Sankey
         fig = go.Figure(data=[go.Sankey(
             node=dict(
                 pad=15,
                 thickness=20,
-                line=dict(color="black", width=0.5),
-                label=labels_list
+                line=dict(color="black", width=0.0),
+                label=labels_list,
+                color=node_colors
             ),
             link=dict(
                 source=[i for i in range(len(income_labels))] + [total_node] * len(expense_labels),
                 target=[total_node] * len(income_labels) + [i + len(income_labels) for i in range(len(expense_labels))],
-                value=income_sum_cats[column].tolist() + expense_sum_cats[column].tolist()
+                value=income_sum_cats[column].tolist() + expense_sum_cats[column].tolist(),
+                color=link_colors
             ))])
 
         filename = f'{tmpdirname}/sankey_{field_abbr}.png'
@@ -215,7 +233,7 @@ def render_income(context, data_month: pd.DataFrame):
     return context
 
 
-def render_expenses(doc, context, tmpdirname, data_month: pd.DataFrame):
+def render_expenses(doc, context, tmpdirname, data_month: pd.DataFrame, norm_color_map: pd.DataFrame):
     def get_expense_fields(column, field_abbr):
         total_sum = total[column].sum()
         cats_total_dict = dict(cats_total[column])
@@ -232,15 +250,22 @@ def render_expenses(doc, context, tmpdirname, data_month: pd.DataFrame):
 
     # Plot pie charts
     cats_total = cats_total * -1  # Convert expenses to positive
-    cats_total = cats_total[['Total', 'Tabea', 'Nick']]  # Rearrange columns
-    n = get_num_categories()
-    colors = [plt.cm.Blues(float(i) / (n + 1)) for i in range(1, n + 1)]
-    cats_total.plot.pie(subplots=True, figsize=(15, 5), legend=True, title=['Total', 'Tabea', 'Nick'],
-                        labeldistance=None, ylabel='', colors=colors, fontsize=80)
-    plt.tight_layout()
-    img_name = os.path.join(tmpdirname, 'expense_pie_charts.png')
-    plt.savefig(img_name)
-    context['expense_pie_charts'] = InlineImage(doc, img_name, width=Mm(160))
+
+    def pie_separate(column, field_abbr, cats):
+        cats_single = cats[[column]]
+        cats_single = cats_single.sort_values(by=[column], ascending=False)
+        # Get colors as list
+        colors = list(cats_single.index.map(lambda x: norm_color_map.loc[x, 'color']))
+        cats_single.plot.pie(subplots=True, figsize=(5, 5), legend=True, title=column,
+                             labeldistance=None, ylabel='', colors=colors, fontsize=80)
+        plt.tight_layout()
+        img_name = os.path.join(tmpdirname, f'expense_pie_charts_{field_abbr}.png')
+        plt.savefig(img_name)
+        context[f'expense_pie_charts_{field_abbr}'] = InlineImage(doc, img_name, width=Mm(50))
+
+    pie_separate('Total', 'tot', cats_total)
+    pie_separate('Nick', 'ni', cats_total)
+    pie_separate('Tabea', 'ta', cats_total)
 
     return context
 
@@ -400,7 +425,8 @@ def render_top_expenses(context, full_data: pd.DataFrame, year_data: pd.DataFram
     return context
 
 
-def render_template(month, year, data, reports_dir, template_name="Report_Template.docx"):
+def render_template(month, year, data, norm_color_map, tricount_color_map, reports_dir,
+                    template_name="Report_Template.docx"):
     with tempfile.TemporaryDirectory() as tmpdirname:
         doc = DocxTemplate(template_name)
         context = {'current_month': str(month),
@@ -414,16 +440,16 @@ def render_template(month, year, data, reports_dir, template_name="Report_Templa
 
         df = filter_past_only(month, year, data)
 
-        context, col = normalize_categories(context, df['Category'])
+        context, col = normalize_categories(context, df['Category'], norm_color_map, tricount_color_map)
         df['Category_Norm'] = col
         # Get month data
         current_month_data = get_month_data(df, month, year)
         current_year_data = get_year_data(df, year)
 
-        context = render_sankey(doc, context, tmpdirname, current_month_data)
+        context = render_sankey(doc, context, tmpdirname, current_month_data, tricount_color_map)
 
         context = render_income(context, current_month_data)
-        context = render_expenses(doc, context, tmpdirname, current_month_data)
+        context = render_expenses(doc, context, tmpdirname, current_month_data, norm_color_map)
         context = render_balance(context, df, current_year_data, current_month_data)
         context = render_trends(doc, context, df, tmpdirname)
         context = render_trend_balance(doc, context, df, tmpdirname)
@@ -434,11 +460,14 @@ def render_template(month, year, data, reports_dir, template_name="Report_Templa
 
 
 if __name__ == '__main__':
-    data_dir = 'C:\\Users\\Nick\\OneDrive\\Dokumente\\Persönlich\\Buntentor\\02_Financials\\01_monthly\\'
-    reports_dir = 'C:\\Users\\Nick\\OneDrive\\Dokumente\\Persönlich\\Buntentor\\02_Financials\\01_monthly\\reports\\'
-    month = 6
+    base_dir = 'C:\\Users\\Nick\\OneDrive\\Dokumente\\Persönlich\\Buntentor\\02_Financials\\01_monthly\\'
+    reports_dir = base_dir + 'reports\\'
+    data_dir = base_dir + 'data\\'
+    csv_name = 'Tricount_BuntentorAxiom.csv'
+    month = 5
     year = 2023
-    data = read_tricount_data(data_dir)
-    data.to_excel(data_dir + f"{year}{month:02}.xlsx")
-    render_template(month, year, data, reports_dir)
 
+    norm_color_map, tricount_color_map = get_color_map(data_dir)
+    data = read_tricount_data(data_dir, filename=csv_name)
+    data.to_excel(base_dir + f"{year}{month:02}.xlsx")
+    render_template(month, year, data, norm_color_map, tricount_color_map, reports_dir)
