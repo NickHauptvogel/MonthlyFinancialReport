@@ -287,7 +287,7 @@ def render_balance(context, full_data: pd.DataFrame, year_data: pd.DataFrame, mo
     return context
 
 
-def plot_trend_regression(tmpdirname, data, title, filename):
+def plot_trend_regression(tmpdirname, data, title, filename, color='#000000'):
     points = data.values.tolist()
     X = np.array([[i, points[i]] for i in range(len(points))])
     X_clean = X[~np.isnan(points), :]
@@ -301,35 +301,33 @@ def plot_trend_regression(tmpdirname, data, title, filename):
     reg.fit(X_clean[:, 0].reshape(-1, 1), X_clean[:, 1].reshape(-1, 1))
     y_pred = np.array(reg.predict(X_clean[:, 0].reshape(-1, 1)))
 
-    plt.figure(figsize=(10, 4))
+    fig = plt.figure(figsize=(10, 4))
+    ax = fig.add_subplot(111)
     plt.grid()
-    plt.plot(indices, X[:, 1], label='Expenses')
-    plt.plot(indices_clean, y_pred, label=f'Regression Line: m = {str(np.round(reg.coef_[0][0], 2))} EUR')
+    ax.plot(indices, X[:, 1], label='Expenses', color=color)
+    ax.plot(indices_clean, y_pred, label=f'Lin Reg. m = {str(np.round(reg.coef_[0][0], 2))} €/month', color='#000000', linestyle='--')
+    ax.patch.set_facecolor(color)
+    ax.patch.set_alpha(0.05)
     plt.legend()
     plt.title(title)
     plt.xticks(rotation=45)
     plt.tight_layout()
 
-    plt.savefig(os.path.join(tmpdirname, filename))
+    fig.savefig(os.path.join(tmpdirname, filename), facecolor=fig.get_facecolor(), edgecolor='none')
 
 
-def render_trends(doc, context, data, tmpdirname):
+def render_trends(doc, context, data, tmpdirname, norm_color_map):
     def render_trends_separate(column, field_abbr):
         cats_total_column = cats_total[column]
 
         cat = 'Total'
-        plot_trend_regression(tmpdirname, cats_total_column.sum(axis=1), f'{column} {cat}',
-                              f'trend_{field_abbr}_{cat}.png')
-        context[f'trend_{field_abbr}_{str.lower(cat)}'] = InlineImage(doc, os.path.join(tmpdirname,
-                                                                                        f'trend_{field_abbr}_{cat}.png'),
-                                                                      width=Mm(160))
+        plot_trend_regression(tmpdirname, cats_total_column.sum(axis=1), f'{column} {cat}', f'trend_{field_abbr}_{cat}.png')
+        context[f'trend_{field_abbr}_{str.lower(cat)}'] = InlineImage(doc, os.path.join(tmpdirname, f'trend_{field_abbr}_{cat}.png'), width=Mm(160))
 
         for cat in get_trend_cats():
-            plot_trend_regression(tmpdirname, cats_total_column[cat], f'{column} {cat}',
-                                  f'trend_{field_abbr}_{cat}.png')
-            context[f'trend_{field_abbr}_{str.lower(cat)}'] = InlineImage(doc, os.path.join(tmpdirname,
-                                                                                            f'trend_{field_abbr}_{cat}.png'),
-                                                                          width=Mm(160))
+            color = norm_color_map.loc[cat, 'color']
+            plot_trend_regression(tmpdirname, cats_total_column[cat], f'{column} {cat}', f'trend_{field_abbr}_{cat}.png', color=color)
+            context[f'trend_{field_abbr}_{str.lower(cat)}'] = InlineImage(doc, os.path.join(tmpdirname, f'trend_{field_abbr}_{cat}.png'), width=Mm(160))
 
     total = get_expenses(data)
     cats_total = total.groupby(['Year', 'Month', 'Category_Norm']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
@@ -347,9 +345,9 @@ def render_trend_balance(doc, context, data, tmpdirname):
     def render_trend_balance_separate(costs_merged, column, field_abbr, suffix):
         fig = plt.figure(figsize=(15, 10))
         ax = fig.add_subplot(111)
-        costs_merged[column + '_expense'].plot.bar(ax=ax, color=['maroon'], alpha=0.4)
-        costs_merged[column + '_income'].plot.bar(ax=ax, color=['olivedrab'], alpha=0.4)
-        costs_merged[column].plot.bar(ax=ax, grid=True)
+        costs_merged[column + '_expense'].plot.bar(ax=ax, color=['#F7CAAC'])
+        costs_merged[column + '_income'].plot.bar(ax=ax, color=['#ACB9CA'])
+        costs_merged[column].plot.bar(ax=ax, grid=True, color=['#303030'], alpha=0.4)
 
         patches_per_cat = len(ax.patches) * 2 // 3
         for p in ax.patches[patches_per_cat:]:
@@ -451,7 +449,7 @@ def render_template(month, year, data, norm_color_map, tricount_color_map, repor
         context = render_income(context, current_month_data)
         context = render_expenses(doc, context, tmpdirname, current_month_data, norm_color_map)
         context = render_balance(context, df, current_year_data, current_month_data)
-        context = render_trends(doc, context, df, tmpdirname)
+        context = render_trends(doc, context, df, tmpdirname, norm_color_map)
         context = render_trend_balance(doc, context, df, tmpdirname)
         context = render_top_expenses(context, df, current_year_data, current_month_data)
 
@@ -464,7 +462,7 @@ if __name__ == '__main__':
     reports_dir = base_dir + 'reports\\'
     data_dir = base_dir + 'data\\'
     csv_name = 'Tricount_BuntentorAxiom.csv'
-    month = 5
+    month = 6
     year = 2023
 
     norm_color_map, tricount_color_map = get_color_map(data_dir)
