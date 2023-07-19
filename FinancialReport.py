@@ -33,14 +33,33 @@ def filter_past_only(month, year, df):
 
 
 def get_color_map(data_dir, file_name="color_mapping.xlsx", parent_category_sheet="parent_category",
-                  tricount_sheet="tricount_category"):
+                  tricount_sheet="tricount_category", net_worth_sheet="networth_category"):
     norm_color_map = pd.read_excel(os.path.join(data_dir, file_name), sheet_name=parent_category_sheet)
     norm_color_map = norm_color_map.set_index('parent_category')
 
     tricount_color_map = pd.read_excel(os.path.join(data_dir, file_name), sheet_name=tricount_sheet)
     tricount_color_map = tricount_color_map.set_index('tricount_category')
+    
+    net_worth_color_map = pd.read_excel(os.path.join(data_dir, file_name), sheet_name=net_worth_sheet)
+    net_worth_color_map = net_worth_color_map.set_index('networth_category')
 
-    return norm_color_map, tricount_color_map
+    return norm_color_map, tricount_color_map, net_worth_color_map
+
+
+def get_net_worth(data_dir, file_name):
+    df = pd.read_excel(os.path.join(data_dir, file_name), sheet_name='Nick')
+    df = df.rename(columns={"Value": "Nick"})
+    df2 = pd.read_excel(os.path.join(data_dir, file_name), sheet_name='Tabea')
+    df2 = df2.rename(columns={"Value": "Tabea"})
+    # Stack dataframes
+    df = pd.concat([df, df2]).reset_index(drop=True)
+    df = df.fillna(0)
+    df['Total'] = df['Nick'] + df['Tabea']
+
+    cats_total = df.groupby(['Year', 'Month', 'Category']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
+    cats_total = cats_total.unstack(level=-1)
+
+    return cats_total
 
 
 def read_tricount_data(data_dir, filename="data.csv") -> pd.DataFrame:
@@ -233,7 +252,7 @@ def render_income(context, data_month: pd.DataFrame):
     return context
 
 
-def render_expenses(doc, context, tmpdirname, data_month: pd.DataFrame, norm_color_map: pd.DataFrame):
+def render_expenses(doc, context, tmpdirname, data_month: pd.DataFrame, color_map: pd.DataFrame):
     def get_expense_fields(column, field_abbr):
         total_sum = total[column].sum()
         cats_total_dict = dict(cats_total[column])
@@ -251,21 +270,12 @@ def render_expenses(doc, context, tmpdirname, data_month: pd.DataFrame, norm_col
     # Plot pie charts
     cats_total = cats_total * -1  # Convert expenses to positive
 
-    def pie_separate(column, field_abbr, cats):
-        cats_single = cats[[column]]
-        cats_single = cats_single.sort_values(by=[column], ascending=False)
-        # Get colors as list
-        colors = list(cats_single.index.map(lambda x: norm_color_map.loc[x, 'color']))
-        cats_single.plot.pie(subplots=True, figsize=(5, 5), legend=True, title=column,
-                             labeldistance=None, ylabel='', colors=colors, fontsize=80)
-        plt.tight_layout()
-        img_name = os.path.join(tmpdirname, f'expense_pie_charts_{field_abbr}.png')
-        plt.savefig(img_name)
-        context[f'expense_pie_charts_{field_abbr}'] = InlineImage(doc, img_name, width=Mm(50))
-
-    pie_separate('Total', 'tot', cats_total)
-    pie_separate('Nick', 'ni', cats_total)
-    pie_separate('Tabea', 'ta', cats_total)
+    plot_pie_chart('Total', cats_total, color_map, tmpdirname, 'expense_pie_charts_tot.png', plot_percentages=False)
+    plot_pie_chart('Nick', cats_total, color_map, tmpdirname, 'expense_pie_charts_ni.png', plot_percentages=False)
+    plot_pie_chart('Tabea', cats_total, color_map, tmpdirname, 'expense_pie_charts_ta.png', plot_percentages=False)
+    context['expense_pie_charts_tot'] = InlineImage(doc, os.path.join(tmpdirname, 'expense_pie_charts_tot.png'), width=Mm(50))
+    context['expense_pie_charts_ni'] = InlineImage(doc, os.path.join(tmpdirname, 'expense_pie_charts_ni.png'), width=Mm(50))
+    context['expense_pie_charts_ta'] = InlineImage(doc, os.path.join(tmpdirname, 'expense_pie_charts_ta.png'), width=Mm(50))
 
     return context
 
@@ -285,6 +295,43 @@ def render_balance(context, full_data: pd.DataFrame, year_data: pd.DataFrame, mo
     get_balance_fields('Tabea', 'ta')
 
     return context
+
+
+def render_networth(doc, context, tmpdirname, net_worth, net_worth_month, color_map):
+
+    context['networth_tot'] = np.round(net_worth_month['Total'].sum(), 2)
+    context['networth_ni'] = np.round(net_worth_month['Nick'].sum(), 2)
+    context['networth_ta'] = np.round(net_worth_month['Tabea'].sum(), 2)
+
+    plot_pie_chart('Total', net_worth_month, color_map, tmpdirname, 'networth_pie_tot.png')
+    plot_pie_chart('Nick', net_worth_month, color_map, tmpdirname, 'networth_pie_ni.png')
+    plot_pie_chart('Tabea', net_worth_month, color_map, tmpdirname, 'networth_pie_ta.png')
+    context['networth_pie_tot'] = InlineImage(doc, os.path.join(tmpdirname, 'networth_pie_tot.png'), width=Mm(50))
+    context['networth_pie_ni'] = InlineImage(doc, os.path.join(tmpdirname, 'networth_pie_ni.png'), width=Mm(50))
+    context['networth_pie_ta'] = InlineImage(doc, os.path.join(tmpdirname, 'networth_pie_ta.png'), width=Mm(50))
+
+    def render_trends_separate(column, field_abbr):
+        plot_trend_regression(tmpdirname, net_worth[column].sum(axis=1), f'{column}', f'networth_trend_{field_abbr}.png')
+        context[f'networth_trend_{field_abbr}'] = InlineImage(doc, os.path.join(tmpdirname, f'networth_trend_{field_abbr}.png'), width=Mm(160))
+
+    render_trends_separate('Total', 'tot')
+    render_trends_separate('Nick', 'ni')
+    render_trends_separate('Tabea', 'ta')
+
+    return context
+
+
+def plot_pie_chart(column, cats, color_map, tmpdirname, filename, plot_percentages=True):
+    cats_single = cats[[column]]
+    cats_single = cats_single.sort_values(by=[column], ascending=False)
+    # Get colors as list
+    colors = list(cats_single.index.map(lambda x: color_map.loc[x, 'color']))
+    autopct = '%1.1f%%' if plot_percentages else None
+    cats_single.plot.pie(subplots=True, figsize=(5, 5), legend=True, title=column,
+                         labeldistance=None, ylabel='', colors=colors, fontsize=15, autopct=autopct)
+    plt.tight_layout()
+    img_name = os.path.join(tmpdirname, filename)
+    plt.savefig(img_name)
 
 
 def plot_trend_regression(tmpdirname, data, title, filename, color='#000000'):
@@ -423,7 +470,7 @@ def render_top_expenses(context, full_data: pd.DataFrame, year_data: pd.DataFram
     return context
 
 
-def render_template(month, year, data, norm_color_map, tricount_color_map, reports_dir,
+def render_template(month, year, data, net_worth, norm_color_map, tricount_color_map, net_worth_color_map, reports_dir,
                     template_name="Report_Template.docx"):
     with tempfile.TemporaryDirectory() as tmpdirname:
         doc = DocxTemplate(template_name)
@@ -449,6 +496,13 @@ def render_template(month, year, data, norm_color_map, tricount_color_map, repor
         context = render_income(context, current_month_data)
         context = render_expenses(doc, context, tmpdirname, current_month_data, norm_color_map)
         context = render_balance(context, df, current_year_data, current_month_data)
+        try:
+            net_worth_month = net_worth.loc[year, month]
+            net_worth_month = net_worth_month.unstack(level=-1).T
+            context = render_networth(doc, context, tmpdirname, net_worth, net_worth_month, net_worth_color_map)
+            context['display_networth'] = True
+        except KeyError:
+            context['display_networth'] = False
         context = render_trends(doc, context, df, tmpdirname, norm_color_map)
         context = render_trend_balance(doc, context, df, tmpdirname)
         context = render_top_expenses(context, df, current_year_data, current_month_data)
@@ -462,10 +516,12 @@ if __name__ == '__main__':
     reports_dir = base_dir + 'reports\\'
     data_dir = base_dir + 'data\\'
     csv_name = 'Tricount_BuntentorAxiom.csv'
+    net_worth_name = 'networth.xlsx'
     month = 6
     year = 2023
 
-    norm_color_map, tricount_color_map = get_color_map(data_dir)
+    norm_color_map, tricount_color_map, net_worth_color_map = get_color_map(data_dir)
+    net_worth = get_net_worth(data_dir, net_worth_name)
     data = read_tricount_data(data_dir, filename=csv_name)
     data.to_excel(base_dir + f"{year}{month:02}.xlsx")
-    render_template(month, year, data, norm_color_map, tricount_color_map, reports_dir)
+    render_template(month, year, data, net_worth, norm_color_map, tricount_color_map, net_worth_color_map, reports_dir)
