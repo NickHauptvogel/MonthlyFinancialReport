@@ -14,145 +14,12 @@ from docx.shared import Mm
 
 def hex_to_rgba(hex: str, opacity=0.5):
     hex = hex.lstrip('#')
-    r, g, b = tuple(int(hex[i:i+2], 16) for i in (0, 2, 4))
+    r, g, b = tuple(int(hex[i:i + 2], 16) for i in (0, 2, 4))
     return f'rgba({r}, {g}, {b}, {opacity})'
-
-
-def filter_past_only(month, year, df):
-    # Include only past expenses
-    next_year = int(year)
-    next_month = int(month) + 1
-    if next_month > 12:
-        next_month = next_month % 12
-        next_year += 1
-
-    last_date = datetime(next_year, next_month, 1)
-    df = df[df['Date_Time'] < last_date]
-
-    return df
-
-
-def get_color_map(data_dir, file_name="color_mapping.xlsx", parent_category_sheet="parent_category",
-                  tricount_sheet="tricount_category", net_worth_sheet="networth_category"):
-    norm_color_map = pd.read_excel(os.path.join(data_dir, file_name), sheet_name=parent_category_sheet)
-    norm_color_map = norm_color_map.set_index('parent_category')
-
-    tricount_color_map = pd.read_excel(os.path.join(data_dir, file_name), sheet_name=tricount_sheet)
-    tricount_color_map = tricount_color_map.set_index('tricount_category')
-    
-    net_worth_color_map = pd.read_excel(os.path.join(data_dir, file_name), sheet_name=net_worth_sheet)
-    net_worth_color_map = net_worth_color_map.set_index('networth_category')
-
-    return norm_color_map, tricount_color_map, net_worth_color_map
-
-
-def get_net_worth(data_dir, file_name):
-    df = pd.read_excel(os.path.join(data_dir, file_name), sheet_name='Nick')
-    df = df.rename(columns={"Value": "Nick"})
-    df2 = pd.read_excel(os.path.join(data_dir, file_name), sheet_name='Tabea')
-    df2 = df2.rename(columns={"Value": "Tabea"})
-    # Stack dataframes
-    df = pd.concat([df, df2]).reset_index(drop=True)
-    df = df.fillna(0)
-    df['Total'] = df['Nick'] + df['Tabea']
-
-    cats_total = df.groupby(['Year', 'Month', 'Category']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    cats_total = cats_total.unstack(level=-1)
-
-    return cats_total
-
-
-def read_tricount_data(data_dir, filename="data.csv") -> pd.DataFrame:
-    """
-    Reads and returns dataframe in following format:
-    Title: Title of expense / income
-    Total: Total amount spent (negative) or received (positive)
-    Category: Category of expense
-    Nick: Nicks amount spent (negative) or received (positive)
-    Tabea: Tabeas amount spent (negative) or received (positive)
-    Date_Time: Timestamp
-    Month: Number of month
-    Year: Number of year
-
-    :param data_dir: path to data
-    :param filename: filename
-    :return: pd.Dataframe
-    """
-
-    df = pd.read_csv(data_dir + filename)
-    # Delete last row (Tricount export info)
-    df = df[:-1]
-
-    df['Date_Time'] = pd.to_datetime(df['Date & time'])
-    df['Month'] = df['Date_Time'].dt.month
-    df['Year'] = df['Date_Time'].dt.year
-
-    # Drop unnecessary columns
-    df = df.drop(
-        columns=['Amount', 'Currency', 'Exchange rate', 'Attachment URL', 'Paid by',
-                 'Paid by Nick', 'Paid by Tabea', 'Date & time'])
-    # Normalize column names
-    df = df.rename(columns={"Title": "Title"})
-    df = df.rename(columns={"Amount in default currency (EUR)": "Total"})
-    df['Total'] = df['Total'] * -1
-    df = df.rename(columns={"Category": "Category"})
-    df = df.rename(columns={"Impacted to Nick": "Nick"})
-    df = df.rename(columns={"Impacted to Tabea": "Tabea"})
-
-    # Handle direct transactions
-    def f(row):
-        if row['Transaction type'] == 'Money transfer':
-            if row['Nick'] == 0.0:
-                row['Nick'] = -1 * row['Total']
-            elif row['Tabea'] == 0.0:
-                row['Tabea'] = -1 * row['Total']
-            row['Total'] = 0.0
-
-        return row
-
-    df = df.apply(f, axis=1)
-    df = df.drop(columns=['Transaction type'])
-
-    return df
 
 
 def get_trend_cats():
     return ['Charges', 'Groceries', 'Shopping', 'Leisure', 'Urlaub']  # TODO In Excel sheet
-
-
-def normalize_categories(context, s_categories, norm_color_map, tricount_color_map):
-    urlaub_set = set()
-    misc_set = set()
-
-    def insert_norm_category(cell):
-        if 'Urlaub' in str(cell):
-            value = 'Urlaub'
-            urlaub_set.add(cell)
-        elif pd.isnull(cell):
-            value = 'Misc'
-        else:
-            try:
-                # Get value from dataframe
-                value = tricount_color_map.loc[cell]['parent_category']
-            except KeyError:
-                misc_set.add(cell)
-                value = 'Misc'
-        cell = value
-        return cell
-
-    s_categories_norm = s_categories.apply(insert_norm_category)
-
-    # Get distinct parent categories from norm_color_map
-    parent_categories = norm_color_map.index.unique()
-    for parent_category in parent_categories:
-        # All values in tricount_color_map that have parent_category as parent_category
-        context[f'{parent_category.lower()}_list'] = tricount_color_map[
-            tricount_color_map['parent_category'] == parent_category].index.tolist()
-
-    context['urlaub_list'] = list(urlaub_set)
-    context['misc_list'] = list(misc_set)
-
-    return context, s_categories_norm
 
 
 def get_incomes(data, column='Total'):
@@ -172,11 +39,242 @@ def get_year_data(data, year):
     return data[data['Year'] == year]
 
 
-def render_sankey(doc, context, tmpdirname, data_month: pd.DataFrame, tricount_color_map: pd.DataFrame):
-    def render_sankey_separate(column, field_abbr):
-        incomes = get_incomes(data_month, column=column)
-        expenses = get_expenses(data_month, column=column)
+def datetime_to_date(row):
+    row['Date'] = row['Date_Time'].strftime("%d.%m.%Y")
+    return row
 
+
+class FinancialReportCreator:
+
+    def __init__(self,
+                 data_dir,
+                 tricount_csv_name,
+                 networth_xlsx_name,
+                 color_mapping_xlsx_name,
+                 template_name,
+                 month,
+                 year,
+                 reports_dir,
+                 excel_dir,
+                 people,
+                 parent_category_sheet="parent_category",
+                 tricount_sheet="tricount_category",
+                 networth_sheet="networth_category"):
+
+        self.month = month
+        self.year = year
+        self.data_dir = data_dir
+        self.reports_dir = reports_dir
+        self.excel_dir = excel_dir
+        # Make sure all directories exist
+        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(self.reports_dir, exist_ok=True)
+        os.makedirs(self.excel_dir, exist_ok=True)
+        self.people = people
+        self.analysis_columns = people + [('Total', 'tot')]
+        self.tmpdirname = None
+        self.context = {'current_month': str(month),
+                        'current_year': str(year),
+                        'person1_name': people[0][0],
+                        'person2_name': people[1][0]}
+        self.doc = DocxTemplate(template_name)
+        self.norm_color_map, self.tricount_color_map, self.networth_color_map = \
+            self.read_color_map(color_mapping_xlsx_name, parent_category_sheet, tricount_sheet, networth_sheet)
+        self.networth = self.read_networth_data(networth_xlsx_name)
+        self.data = self.read_tricount_data(tricount_csv_name)
+
+        # Get the earliest date
+        earliest_date = self.data['Date_Time'].min()
+        # Counts the number of months between the earliest date and the current date
+        count_months = (self.year - earliest_date.year) * 12 + (self.month - earliest_date.month)
+        self.context['count_months'] = count_months
+
+        # Remove future expenses for current month and year
+        next_year = int(self.year)
+        next_month = int(self.month) + 1
+        if next_month > 12:
+            next_month = next_month % 12
+            next_year += 1
+
+        last_date = datetime(next_year, next_month, 1)
+        self.data = self.data[self.data['Date_Time'] < last_date]
+
+        # Normalize categories
+        self.data['Category_Norm'] = self.normalize_categories()
+        # Turn datetime into date string
+        self.data = self.data.apply(datetime_to_date, axis=1)
+        # Store month and year data
+        self.month_data = get_month_data(self.data, month, year)
+        self.year_data = get_year_data(self.data, year)
+
+        try:
+            self.month_networth = self.networth.loc[year, month]
+            self.month_networth = self.month_networth.unstack(level=-1).T
+            self.context['display_networth'] = True
+        except KeyError:
+            self.context['display_networth'] = False
+
+    def read_color_map(self, file_name, parent_category_sheet, tricount_sheet, networth_sheet):
+        norm_color_map = pd.read_excel(os.path.join(self.data_dir, file_name), sheet_name=parent_category_sheet)
+        norm_color_map = norm_color_map.set_index('parent_category')
+        tricount_color_map = pd.read_excel(os.path.join(self.data_dir, file_name), sheet_name=tricount_sheet)
+        tricount_color_map = tricount_color_map.set_index('tricount_category')
+        networth_color_map = pd.read_excel(os.path.join(self.data_dir, file_name), sheet_name=networth_sheet)
+        networth_color_map = networth_color_map.set_index('networth_category')
+
+        return norm_color_map, tricount_color_map, networth_color_map
+
+    def read_networth_data(self, file_name):
+        dfs = []
+        names = [name for name, _ in self.people]
+        for name in names:
+            df = pd.read_excel(os.path.join(self.data_dir, file_name), sheet_name=name)
+            df = df.rename(columns={"Value": name})
+            dfs.append(df)
+
+        # Stack dataframes
+        df = pd.concat(dfs).reset_index(drop=True)
+        df = df.fillna(0)
+        df['Total'] = df[names].sum(axis=1)
+
+        group_dict = {'Total': 'sum'}
+        group_dict.update({name: 'sum' for name, _ in self.people})
+        cats_total = df.groupby(['Year', 'Month', 'Category']).agg(group_dict)
+        cats_total = cats_total.unstack(level=-1)
+
+        return cats_total
+
+    def read_tricount_data(self, filename) -> pd.DataFrame:
+        """
+        Reads and returns dataframe in following format:
+        Title: Title of expense / income
+        Total: Total amount spent (negative) or received (positive)
+        Category: Category of expense
+        Person1: Person 1s amount spent (negative) or received (positive)
+        Person2: Person 2s amount spent (negative) or received (positive)
+        Date_Time: Timestamp
+        Month: Number of month
+        Year: Number of year
+
+        :param filename: filename
+        :return: pd.Dataframe
+        """
+
+        df = pd.read_csv(os.path.join(self.data_dir, filename))
+        # Delete last row (Tricount export info)
+        df = df[:-1]
+
+        df['Date_Time'] = pd.to_datetime(df['Date & time'])
+        df['Month'] = df['Date_Time'].dt.month
+        df['Year'] = df['Date_Time'].dt.year
+
+        names = [name for name, _ in self.people]
+
+        # Drop unnecessary columns
+        df = df.drop(
+            columns=['Amount', 'Currency', 'Exchange rate', 'Attachment URL', 'Paid by', 'Date & time']
+                    + ['Paid by ' + name for name in names])
+        # Normalize column names
+        df = df.rename(columns={"Amount in default currency (EUR)": "Total"})
+        df['Total'] = df['Total'] * -1  # Tricount shows expenses as positive values
+
+        for name in names:
+            df = df.rename(columns={f"Impacted to {name}": f"{name}"})
+
+        # Handle direct transactions
+        def f(row):
+            if row['Transaction type'] == 'Money transfer':
+                for name in names:
+                    if row[name] == 0.0:
+                        row[name] = -1 * row['Total']
+                        break
+                row['Total'] = 0.0
+
+            return row
+
+        df = df.apply(f, axis=1)
+        df = df.drop(columns=['Transaction type'])
+
+        return df
+
+    def normalize_categories(self):
+        urlaub_set = set()
+        misc_set = set()
+
+        def insert_norm_category(cell):
+            if 'Urlaub' in str(cell):
+                value = 'Urlaub'
+                urlaub_set.add(cell)
+            elif pd.isnull(cell):
+                value = 'Misc'
+            else:
+                try:
+                    # Get value from dataframe
+                    value = self.tricount_color_map.loc[cell]['parent_category']
+                except KeyError:
+                    misc_set.add(cell)
+                    value = 'Misc'
+            cell = value
+            return cell
+
+        s_categories_norm = self.data['Category'].apply(insert_norm_category)
+
+        # Get distinct parent categories from norm_color_map
+        parent_categories = self.norm_color_map.index.unique()
+        for parent_category in parent_categories:
+            # All values in tricount_color_map that have parent_category as parent_category
+            self.context[f'{parent_category.lower()}_list'] = self.tricount_color_map[
+                self.tricount_color_map['parent_category'] == parent_category].index.tolist()
+
+        self.context['urlaub_list'] = list(urlaub_set)
+        self.context['misc_list'] = list(misc_set)
+
+        return s_categories_norm
+
+    def plot_pie_chart(self, column, cats, color_map, plot_name, plot_percentages=True):
+        cats_single = cats.sort_values(by=[column], ascending=False)
+        # Get colors as list
+        colors = list(cats_single.index.map(lambda x: color_map.loc[x, 'color']))
+        autopct = '%1.1f%%' if plot_percentages else None
+        cats_single.plot.pie(subplots=True, figsize=(5, 5), legend=True, title=column,
+                             labeldistance=None, ylabel='', colors=colors, fontsize=15, autopct=autopct)
+        plt.tight_layout()
+        img_name = os.path.join(self.tmpdirname, f'{plot_name}.png')
+        plt.savefig(img_name)
+        self.context[plot_name] = InlineImage(self.doc, img_name, width=Mm(50))
+
+    def plot_trend_regression(self, data, title, plot_name, color='#000000'):
+        points = data.values.tolist()
+        X = np.array([[i, points[i]] for i in range(len(points))])
+        X_clean = X[~np.isnan(points), :]
+        X = np.nan_to_num(X)
+
+        indices = list(data.index)
+        indices = [str(elem) for elem in indices]
+        indices_clean = np.array(indices)[~np.isnan(points)]
+
+        reg = LinearRegression()
+        reg.fit(X_clean[:, 0].reshape(-1, 1), X_clean[:, 1].reshape(-1, 1))
+        y_pred = np.array(reg.predict(X_clean[:, 0].reshape(-1, 1)))
+
+        fig = plt.figure(figsize=(10, 4))
+        ax = fig.add_subplot(111)
+        plt.grid()
+        ax.plot(indices, X[:, 1], label='Expenses', color=color)
+        ax.plot(indices_clean, y_pred, label=f'Lin Reg. m = {str(np.round(reg.coef_[0][0], 2))} €/month',
+                color='#000000', linestyle='--')
+        ax.patch.set_facecolor(color)
+        ax.patch.set_alpha(0.05)
+        plt.legend()
+        plt.title(title)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+
+        fig.savefig(os.path.join(self.tmpdirname, f'{plot_name}.png'), facecolor=fig.get_facecolor(), edgecolor='none')
+        self.context[plot_name] = InlineImage(self.doc, os.path.join(self.tmpdirname, f'{plot_name}.png'),
+                                              width=Mm(160))
+
+    def render_sankey(self, column, field_abbr, incomes, expenses):
         income_sum_cats = incomes.groupby(['Category']).agg({column: 'sum'})
         income_sum_cats = np.round(income_sum_cats, 2)
         income_sum_cats = income_sum_cats.sort_values(by=[column], ascending=False)
@@ -199,7 +297,9 @@ def render_sankey(doc, context, tmpdirname, data_month: pd.DataFrame, tricount_c
         labels_list = income_labels + expense_labels
         names_list = income_names + expense_names
         # Use grey for as default
-        node_colors = [tricount_color_map.loc[label]['color'] if label in tricount_color_map.index else '#909090' for label in names_list]
+        node_colors = [
+            self.tricount_color_map.loc[label]['color'] if label in self.tricount_color_map.index else '#909090'
+            for label in names_list]
         link_colors = [hex_to_rgba(c) for c in node_colors]
 
         total_node = len(labels_list)
@@ -218,310 +318,159 @@ def render_sankey(doc, context, tmpdirname, data_month: pd.DataFrame, tricount_c
             ),
             link=dict(
                 source=[i for i in range(len(income_labels))] + [total_node] * len(expense_labels),
-                target=[total_node] * len(income_labels) + [i + len(income_labels) for i in range(len(expense_labels))],
+                target=[total_node] * len(income_labels) + [i + len(income_labels) for i in
+                                                            range(len(expense_labels))],
                 value=income_sum_cats[column].tolist() + expense_sum_cats[column].tolist(),
                 color=link_colors
             ))])
 
-        filename = f'{tmpdirname}/sankey_{field_abbr}.png'
+        filename = f'{self.tmpdirname}/sankey_{field_abbr}.png'
         fig.write_image(filename, width=800, height=600, scale=2)
-        context[f'sankey_{field_abbr}'] = InlineImage(doc, filename, width=Mm(160))
+        self.context[f'sankey_{field_abbr}'] = InlineImage(self.doc, filename, width=Mm(160))
 
-    render_sankey_separate('Nick', 'ni')
-    render_sankey_separate('Tabea', 'ta')
-
-    return context
-
-
-def render_income(context, data_month: pd.DataFrame):
-    def get_income_fields(column, field_abbr):
-        total_sum = total[column].sum()
-        context[f'income_{field_abbr}_m'] = np.round(total_sum, 2)
-
-    total = get_incomes(data_month)
-    total_sum_cats = total.groupby(['Category']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    total_sum_cats = total_sum_cats.sort_values('Total', ascending=False)
-    total_sum_cats = np.round(total_sum_cats, 2)
-    total_sum_cats['Category'] = total_sum_cats.index
-    context['income_m'] = total_sum_cats.to_dict(orient='records')
-
-    get_income_fields('Total', 'tot')
-    get_income_fields('Tabea', 'ta')
-    get_income_fields('Nick', 'ni')
-
-    return context
-
-
-def render_expenses(doc, context, tmpdirname, data_month: pd.DataFrame, color_map: pd.DataFrame):
-    def get_expense_fields(column, field_abbr):
-        total_sum = total[column].sum()
+    def render_expenses(self, column, field_abbr, expenses):
+        cats_total = expenses.groupby(['Category_Norm']).agg({column: 'sum'})
         cats_total_dict = dict(cats_total[column])
-        cats_total_dict['Expense'] = total_sum
+        cats_total_dict['Expense'] = expenses[column].sum()
 
         for k, v in cats_total_dict.items():
-            context[f'{str.lower(k)}_{field_abbr}_m'] = np.round(v, 2)
+            self.context[f'{str.lower(k)}_{field_abbr}_m'] = np.round(v, 2)
 
-    total = get_expenses(data_month)
-    cats_total = total.groupby(['Category_Norm']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    get_expense_fields('Total', 'tot')
-    get_expense_fields('Nick', 'ni')
-    get_expense_fields('Tabea', 'ta')
+        cats_total = cats_total * -1  # Convert expenses to positive
+        self.plot_pie_chart(column, cats_total, self.norm_color_map, f'expense_pie_charts_{field_abbr}',
+                            plot_percentages=False)
 
-    # Plot pie charts
-    cats_total = cats_total * -1  # Convert expenses to positive
+    def render_networth(self, column, field_abbr):
+        self.context[f'networth_{field_abbr}'] = np.round(self.month_networth[column].sum(), 2)
+        self.plot_pie_chart(column, self.month_networth[[column]], self.networth_color_map,
+                            f'networth_pie_{field_abbr}', plot_percentages=True)
+        self.plot_trend_regression(self.networth[column].sum(axis=1), f'{column}', f'networth_trend_{field_abbr}')
 
-    plot_pie_chart('Total', cats_total, color_map, tmpdirname, 'expense_pie_charts_tot.png', plot_percentages=False)
-    plot_pie_chart('Nick', cats_total, color_map, tmpdirname, 'expense_pie_charts_ni.png', plot_percentages=False)
-    plot_pie_chart('Tabea', cats_total, color_map, tmpdirname, 'expense_pie_charts_ta.png', plot_percentages=False)
-    context['expense_pie_charts_tot'] = InlineImage(doc, os.path.join(tmpdirname, 'expense_pie_charts_tot.png'), width=Mm(50))
-    context['expense_pie_charts_ni'] = InlineImage(doc, os.path.join(tmpdirname, 'expense_pie_charts_ni.png'), width=Mm(50))
-    context['expense_pie_charts_ta'] = InlineImage(doc, os.path.join(tmpdirname, 'expense_pie_charts_ta.png'), width=Mm(50))
-
-    return context
-
-
-def render_balance(context, full_data: pd.DataFrame, year_data: pd.DataFrame, month_data: pd.DataFrame):
-    def get_balance_fields(column, field_abbr):
-        total_sum = full_data[column].sum()
-        year_sum = year_data[column].sum()
-        month_sum = month_data[column].sum()
-
-        context[f'balance_{field_abbr}_m'] = np.round(month_sum, 2)
-        context[f'balance_{field_abbr}_y'] = np.round(year_sum, 2)
-        context[f'balance_{field_abbr}_tot'] = np.round(total_sum, 2)
-
-    get_balance_fields('Total', 'tot')
-    get_balance_fields('Nick', 'ni')
-    get_balance_fields('Tabea', 'ta')
-
-    return context
-
-
-def render_networth(doc, context, tmpdirname, net_worth, net_worth_month, color_map):
-
-    context['networth_tot'] = np.round(net_worth_month['Total'].sum(), 2)
-    context['networth_ni'] = np.round(net_worth_month['Nick'].sum(), 2)
-    context['networth_ta'] = np.round(net_worth_month['Tabea'].sum(), 2)
-
-    plot_pie_chart('Total', net_worth_month, color_map, tmpdirname, 'networth_pie_tot.png')
-    plot_pie_chart('Nick', net_worth_month, color_map, tmpdirname, 'networth_pie_ni.png')
-    plot_pie_chart('Tabea', net_worth_month, color_map, tmpdirname, 'networth_pie_ta.png')
-    context['networth_pie_tot'] = InlineImage(doc, os.path.join(tmpdirname, 'networth_pie_tot.png'), width=Mm(50))
-    context['networth_pie_ni'] = InlineImage(doc, os.path.join(tmpdirname, 'networth_pie_ni.png'), width=Mm(50))
-    context['networth_pie_ta'] = InlineImage(doc, os.path.join(tmpdirname, 'networth_pie_ta.png'), width=Mm(50))
-
-    def render_trends_separate(column, field_abbr):
-        plot_trend_regression(tmpdirname, net_worth[column].sum(axis=1), f'{column}', f'networth_trend_{field_abbr}.png')
-        context[f'networth_trend_{field_abbr}'] = InlineImage(doc, os.path.join(tmpdirname, f'networth_trend_{field_abbr}.png'), width=Mm(160))
-
-    render_trends_separate('Total', 'tot')
-    render_trends_separate('Nick', 'ni')
-    render_trends_separate('Tabea', 'ta')
-
-    return context
-
-
-def plot_pie_chart(column, cats, color_map, tmpdirname, filename, plot_percentages=True):
-    cats_single = cats[[column]]
-    cats_single = cats_single.sort_values(by=[column], ascending=False)
-    # Get colors as list
-    colors = list(cats_single.index.map(lambda x: color_map.loc[x, 'color']))
-    autopct = '%1.1f%%' if plot_percentages else None
-    cats_single.plot.pie(subplots=True, figsize=(5, 5), legend=True, title=column,
-                         labeldistance=None, ylabel='', colors=colors, fontsize=15, autopct=autopct)
-    plt.tight_layout()
-    img_name = os.path.join(tmpdirname, filename)
-    plt.savefig(img_name)
-
-
-def plot_trend_regression(tmpdirname, data, title, filename, color='#000000'):
-    points = data.values.tolist()
-    X = np.array([[i, points[i]] for i in range(len(points))])
-    X_clean = X[~np.isnan(points), :]
-    X = np.nan_to_num(X)
-
-    indices = list(data.index)
-    indices = [str(elem) for elem in indices]
-    indices_clean = np.array(indices)[~np.isnan(points)]
-
-    reg = LinearRegression()
-    reg.fit(X_clean[:, 0].reshape(-1, 1), X_clean[:, 1].reshape(-1, 1))
-    y_pred = np.array(reg.predict(X_clean[:, 0].reshape(-1, 1)))
-
-    fig = plt.figure(figsize=(10, 4))
-    ax = fig.add_subplot(111)
-    plt.grid()
-    ax.plot(indices, X[:, 1], label='Expenses', color=color)
-    ax.plot(indices_clean, y_pred, label=f'Lin Reg. m = {str(np.round(reg.coef_[0][0], 2))} €/month', color='#000000', linestyle='--')
-    ax.patch.set_facecolor(color)
-    ax.patch.set_alpha(0.05)
-    plt.legend()
-    plt.title(title)
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-
-    fig.savefig(os.path.join(tmpdirname, filename), facecolor=fig.get_facecolor(), edgecolor='none')
-
-
-def render_trends(doc, context, data, tmpdirname, norm_color_map):
-    def render_trends_separate(column, field_abbr):
+    def render_trends(self, column, field_abbr):
+        total = get_expenses(self.data, column=column)
+        cats_total = total.groupby(['Year', 'Month', 'Category_Norm']).agg({column: 'sum'})
+        cats_total = cats_total.unstack(level=-1)
+        cats_total = cats_total * -1
         cats_total_column = cats_total[column]
 
         cat = 'Total'
-        plot_trend_regression(tmpdirname, cats_total_column.sum(axis=1), f'{column} {cat}', f'trend_{field_abbr}_{cat}.png')
-        context[f'trend_{field_abbr}_{str.lower(cat)}'] = InlineImage(doc, os.path.join(tmpdirname, f'trend_{field_abbr}_{cat}.png'), width=Mm(160))
-
+        plot_name = f'trend_{field_abbr}_{str.lower(cat)}'
+        self.plot_trend_regression(cats_total_column.sum(axis=1), f'{column} {cat}', plot_name)
         for cat in get_trend_cats():
-            color = norm_color_map.loc[cat, 'color']
-            plot_trend_regression(tmpdirname, cats_total_column[cat], f'{column} {cat}', f'trend_{field_abbr}_{cat}.png', color=color)
-            context[f'trend_{field_abbr}_{str.lower(cat)}'] = InlineImage(doc, os.path.join(tmpdirname, f'trend_{field_abbr}_{cat}.png'), width=Mm(160))
+            plot_name = f'trend_{field_abbr}_{str.lower(cat)}'
+            color = self.norm_color_map.loc[cat, 'color']
+            self.plot_trend_regression(cats_total_column[cat], f'{column} {cat}', plot_name, color=color)
 
-    total = get_expenses(data)
-    cats_total = total.groupby(['Year', 'Month', 'Category_Norm']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    cats_total = cats_total.unstack(level=-1)
-    cats_total = cats_total * -1
+    def render_trend_balance(self, column, field_abbr):
+        def render_trend_balance_separate(costs_merged, suffix):
+            fig = plt.figure(figsize=(15, 10))
+            ax = fig.add_subplot(111)
+            costs_merged[column + '_expense'].plot.bar(ax=ax, color=['#F7CAAC'])
+            costs_merged[column + '_income'].plot.bar(ax=ax, color=['#ACB9CA'])
+            costs_merged[column].plot.bar(ax=ax, grid=True, color=['#303030'], alpha=0.4)
 
-    render_trends_separate('Total', 'tot')
-    render_trends_separate('Nick', 'ni')
-    render_trends_separate('Tabea', 'ta')
+            patches_per_cat = len(ax.patches) * 2 // 3
+            for p in ax.patches[patches_per_cat:]:
+                if p.get_height() > 0:
+                    ax.annotate(str(round(p.get_height(), 2)), (p.get_x(), p.get_height() + 80))
+                else:
+                    ax.annotate(str(round(p.get_height(), 2)), (p.get_x(), p.get_height() - 200))
 
-    return context
+            plt.xticks(rotation=45)
+            plt.tight_layout()
 
+            name = f'trend_balance_{field_abbr}_{suffix}'
+            path = os.path.join(self.tmpdirname, name + '.png')
+            plt.savefig(path)
+            self.context[name] = InlineImage(self.doc, path, width=Mm(160))
 
-def render_trend_balance(doc, context, data, tmpdirname):
-    def render_trend_balance_separate(costs_merged, column, field_abbr, suffix):
-        fig = plt.figure(figsize=(15, 10))
-        ax = fig.add_subplot(111)
-        costs_merged[column + '_expense'].plot.bar(ax=ax, color=['#F7CAAC'])
-        costs_merged[column + '_income'].plot.bar(ax=ax, color=['#ACB9CA'])
-        costs_merged[column].plot.bar(ax=ax, grid=True, color=['#303030'], alpha=0.4)
+        expenses_m = get_expenses(self.data, column=column).groupby(['Year', 'Month']).agg({column: 'sum'})
+        incomes_m = get_incomes(self.data, column=column).groupby(['Year', 'Month']).agg({column: 'sum'})
+        net_m = self.data.groupby(['Year', 'Month']).agg({column: 'sum'})
+        costs_m_merged = expenses_m.merge(incomes_m, how='outer', left_index=True, right_index=True,
+                                          suffixes=("_expense", "_income")) \
+            .merge(net_m, how='outer', left_index=True, right_index=True)
 
-        patches_per_cat = len(ax.patches) * 2 // 3
-        for p in ax.patches[patches_per_cat:]:
-            if p.get_height() > 0:
-                ax.annotate(str(round(p.get_height(), 2)), (p.get_x(), p.get_height() + 80))
-            else:
-                ax.annotate(str(round(p.get_height(), 2)), (p.get_x(), p.get_height() - 200))
+        expenses_y = get_expenses(self.data, column=column).groupby(['Year']).agg({column: 'sum'})
+        incomes_y = get_incomes(self.data, column=column).groupby(['Year']).agg({column: 'sum'})
+        net_y = self.data.groupby(['Year']).agg({column: 'sum'})
+        costs_y_merged = expenses_y.merge(incomes_y, how='outer', left_index=True, right_index=True,
+                                          suffixes=("_expense", "_income")) \
+            .merge(net_y, how='outer', left_index=True, right_index=True)
 
-        plt.xticks(rotation=45)
-        plt.tight_layout()
+        render_trend_balance_separate(costs_m_merged, 'm')
+        render_trend_balance_separate(costs_y_merged, 'y')
 
-        name = f'trend_balance_{field_abbr}_{suffix}'
-        plt.savefig(os.path.join(tmpdirname, name + '.png'))
-        context[name] = InlineImage(doc, os.path.join(tmpdirname, name + '.png'), width=Mm(160))
+    def render_top_expenses(self, column, field_abbr, n=10):
+        def sort_drop_dup_take_first_n_to_dict(df: pd.DataFrame):
+            def mark_rows(row):
+                if row['Number'] > 1:
+                    row['Date'] = str(row['Number']) + ' times'
+                return row
 
-    expenses_m = get_expenses(data).groupby(['Year', 'Month']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    incomes_m = get_incomes(data).groupby(['Year', 'Month']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    net_m = data.groupby(['Year', 'Month']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    costs_m_merged = expenses_m.merge(incomes_m, how='outer', left_index=True, right_index=True,
-                                      suffixes=("_expense", "_income")) \
-        .merge(net_m, how='outer', left_index=True, right_index=True)
-    expenses_y = get_expenses(data).groupby(['Year']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    incomes_y = get_incomes(data).groupby(['Year']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    net_y = data.groupby(['Year']).agg({'Total': 'sum', 'Nick': 'sum', 'Tabea': 'sum'})
-    costs_y_merged = expenses_y.merge(incomes_y, how='outer', left_index=True, right_index=True,
-                                      suffixes=("_expense", "_income")) \
-        .merge(net_y, how='outer', left_index=True, right_index=True)
+            df_number = df.groupby([column, 'Title']).size().reset_index().rename(columns={0: 'Number'})
 
-    render_trend_balance_separate(costs_m_merged, 'Total', 'tot', 'm')
-    render_trend_balance_separate(costs_m_merged, 'Tabea', 'ta', 'm')
-    render_trend_balance_separate(costs_m_merged, 'Nick', 'ni', 'm')
+            df = df.drop_duplicates(subset=[column, 'Title'], keep='last')
+            df = df.merge(df_number)
+            df = df.apply(mark_rows, axis=1)
+            df = df.reset_index(drop=True)
+            df = df.sort_values(column)
+            return df[:n].to_dict(orient='records')
 
-    render_trend_balance_separate(costs_y_merged, 'Total', 'tot', 'y')
-    render_trend_balance_separate(costs_y_merged, 'Tabea', 'ta', 'y')
-    render_trend_balance_separate(costs_y_merged, 'Nick', 'ni', 'y')
+        self.context[f'top_expenses_{field_abbr}_tot'] = sort_drop_dup_take_first_n_to_dict(self.data)
+        self.context[f'top_expenses_{field_abbr}_y'] = sort_drop_dup_take_first_n_to_dict(self.year_data)
+        self.context[f'top_expenses_{field_abbr}_m'] = sort_drop_dup_take_first_n_to_dict(self.month_data)
 
-    return context
+    def create_report(self):
+        with tempfile.TemporaryDirectory() as tmpdirname:
+            self.tmpdirname = tmpdirname
 
+            self.data.to_excel(os.path.join(self.excel_dir, f"{self.year}{self.month:02}.xlsx"))
 
-def render_top_expenses(context, full_data: pd.DataFrame, year_data: pd.DataFrame, month_data: pd.DataFrame, n=10):
-    def sort_drop_dup_take_first_n_to_dict(df: pd.DataFrame, column):
-        def mark_rows(row):
-            if row['Number'] > 1:
-                row['Date'] = str(row['Number']) + ' times'
-            return row
+            # Render total income (independent of column)
+            income_month_data = get_incomes(self.month_data)
+            income_month_sum_cats = income_month_data.groupby(['Category']).agg(
+                {column: 'sum' for column, _ in self.analysis_columns})
+            income_month_sum_cats = income_month_sum_cats.sort_values('Total', ascending=False)
+            income_month_sum_cats = np.round(income_month_sum_cats, 2)
+            income_month_sum_cats['Category'] = income_month_sum_cats.index
+            income_month_sum_cats = income_month_sum_cats.rename(columns={self.people[0][0]: 'person1'})
+            income_month_sum_cats = income_month_sum_cats.rename(columns={self.people[1][0]: 'person2'})
+            self.context['income_m'] = income_month_sum_cats.to_dict(orient='records')
 
-        df_number = df.groupby([column, 'Title']).size().reset_index().rename(columns={0: 'Number'})
+            for column, field_abbr in self.analysis_columns:
+                income_month_data = get_incomes(self.month_data, column=column)
+                expense_month_data = get_expenses(self.month_data, column=column)
+                self.context[f'income_{field_abbr}_m'] = np.round(income_month_data[column].sum(), 2)
+                self.context[f'balance_{field_abbr}_m'] = np.round(self.month_data[column].sum(), 2)
+                self.context[f'balance_{field_abbr}_y'] = np.round(self.year_data[column].sum(), 2)
+                self.context[f'balance_{field_abbr}_tot'] = np.round(self.data[column].sum(), 2)
 
-        df = df.drop_duplicates(subset=[column, 'Title'], keep='last')
-        df = df.merge(df_number)
-        df = df.apply(mark_rows, axis=1)
-        df = df.reset_index(drop=True)
-        df = df.sort_values(column)
-        return df[:n].to_dict(orient='records')
+                self.render_sankey(column, field_abbr, income_month_data, expense_month_data)
+                self.render_expenses(column, field_abbr, expense_month_data)
+                if self.context['display_networth']:
+                    self.render_networth(column, field_abbr)
+                self.render_trends(column, field_abbr)
+                self.render_trend_balance(column, field_abbr)
+                self.render_top_expenses(column, field_abbr)
 
-    def render_top_expenses_separate(column, field_abbr):
-        context[f'top_expenses_{field_abbr}_tot'] = sort_drop_dup_take_first_n_to_dict(full_data, column)
-        context[f'top_expenses_{field_abbr}_y'] = sort_drop_dup_take_first_n_to_dict(year_data, column)
-        context[f'top_expenses_{field_abbr}_m'] = sort_drop_dup_take_first_n_to_dict(month_data, column)
-
-    def datetime_to_date(row):
-        row['Date'] = row['Date_Time'].strftime("%d.%m.%Y")
-        return row
-
-    full_data = full_data.apply(datetime_to_date, axis=1)
-    year_data = year_data.apply(datetime_to_date, axis=1)
-    month_data = month_data.apply(datetime_to_date, axis=1)
-
-    render_top_expenses_separate('Total', 'tot')
-    render_top_expenses_separate('Nick', 'ni')
-    render_top_expenses_separate('Tabea', 'ta')
-
-    return context
-
-
-def render_template(month, year, data, net_worth, norm_color_map, tricount_color_map, net_worth_color_map, reports_dir,
-                    template_name="Report_Template.docx"):
-    with tempfile.TemporaryDirectory() as tmpdirname:
-        doc = DocxTemplate(template_name)
-        context = {'current_month': str(month),
-                   'current_year': str(year)}
-
-        # Get the earliest date
-        earliest_date = data['Date_Time'].min()
-        # Counts the number of months between the earliest date and the current date
-        count_months = (year - earliest_date.year) * 12 + (month - earliest_date.month)
-        context['count_months'] = count_months
-
-        df = filter_past_only(month, year, data)
-
-        context, col = normalize_categories(context, df['Category'], norm_color_map, tricount_color_map)
-        df['Category_Norm'] = col
-        # Get month data
-        current_month_data = get_month_data(df, month, year)
-        current_year_data = get_year_data(df, year)
-
-        context = render_sankey(doc, context, tmpdirname, current_month_data, tricount_color_map)
-
-        context = render_income(context, current_month_data)
-        context = render_expenses(doc, context, tmpdirname, current_month_data, norm_color_map)
-        context = render_balance(context, df, current_year_data, current_month_data)
-        try:
-            net_worth_month = net_worth.loc[year, month]
-            net_worth_month = net_worth_month.unstack(level=-1).T
-            context = render_networth(doc, context, tmpdirname, net_worth, net_worth_month, net_worth_color_map)
-            context['display_networth'] = True
-        except KeyError:
-            context['display_networth'] = False
-        context = render_trends(doc, context, df, tmpdirname, norm_color_map)
-        context = render_trend_balance(doc, context, df, tmpdirname)
-        context = render_top_expenses(context, df, current_year_data, current_month_data)
-
-        doc.render(context)
-        doc.save(os.path.join(reports_dir, f"Report_{year}_{month}.docx"))
+            self.doc.render(self.context)
+            self.doc.save(os.path.join(self.reports_dir, f"Report_{year}_{month}.docx"))
 
 
 if __name__ == '__main__':
     base_dir = 'C:\\Users\\Nick\\OneDrive\\Dokumente\\Persönlich\\Buntentor\\02_Financials\\01_monthly\\'
     reports_dir = base_dir + 'reports\\'
     data_dir = base_dir + 'data\\'
+    excel_dir = base_dir + 'excel_exports\\'
     csv_name = 'Tricount_BuntentorAxiom.csv'
-    net_worth_name = 'networth.xlsx'
+    networth_name = 'networth.xlsx'
+    color_mapping_name = 'color_mapping.xlsx'
+    template_name = 'report_template.docx'
     month = 6
     year = 2023
+    people = [('Tabea', 'ta'), ('Nick', 'ni')]
 
-    norm_color_map, tricount_color_map, net_worth_color_map = get_color_map(data_dir)
-    net_worth = get_net_worth(data_dir, net_worth_name)
-    data = read_tricount_data(data_dir, filename=csv_name)
-    data.to_excel(base_dir + f"{year}{month:02}.xlsx")
-    render_template(month, year, data, net_worth, norm_color_map, tricount_color_map, net_worth_color_map, reports_dir)
+    fr_creator = FinancialReportCreator(data_dir, csv_name, networth_name, color_mapping_name, template_name, month,
+                                        year, reports_dir, excel_dir, people)
+    fr_creator.create_report()
