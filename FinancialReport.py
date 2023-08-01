@@ -12,14 +12,10 @@ from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 
 
-def hex_to_rgba(hex: str, opacity=0.5):
+def hex_to_rgba(hex: str, opacity=1.0):
     hex = hex.lstrip('#')
     r, g, b = tuple(int(hex[i:i + 2], 16) for i in (0, 2, 4))
     return f'rgba({r}, {g}, {b}, {opacity})'
-
-
-def get_trend_cats():
-    return ['Charges', 'Groceries', 'Shopping', 'Leisure', 'Urlaub']  # TODO In Excel sheet
 
 
 def get_incomes(data, column='Total'):
@@ -123,6 +119,9 @@ class FinancialReportCreator:
         networth_color_map = networth_color_map.set_index('networth_category')
 
         return norm_color_map, tricount_color_map, networth_color_map
+
+    def get_trend_cats(self):
+        return list(self.norm_color_map[self.norm_color_map['show_trend'] == True].index)
 
     def read_networth_data(self, file_name):
         dfs = []
@@ -271,8 +270,6 @@ class FinancialReportCreator:
         plt.tight_layout()
 
         fig.savefig(os.path.join(self.tmpdirname, f'{plot_name}.png'), facecolor=fig.get_facecolor(), edgecolor='none')
-        self.context[plot_name] = InlineImage(self.doc, os.path.join(self.tmpdirname, f'{plot_name}.png'),
-                                              width=Mm(160))
 
     def render_sankey(self, column, field_abbr, incomes, expenses):
         income_sum_cats = incomes.groupby(['Category']).agg({column: 'sum'})
@@ -300,7 +297,7 @@ class FinancialReportCreator:
         node_colors = [
             self.tricount_color_map.loc[label]['color'] if label in self.tricount_color_map.index else '#909090'
             for label in names_list]
-        link_colors = [hex_to_rgba(c) for c in node_colors]
+        link_colors = [hex_to_rgba(c, opacity=0.5) for c in node_colors]
 
         total_node = len(labels_list)
         saldo = incomes[column].sum() + expenses[column].sum()
@@ -344,7 +341,10 @@ class FinancialReportCreator:
         self.context[f'networth_{field_abbr}'] = np.round(self.month_networth[column].sum(), 2)
         self.plot_pie_chart(column, self.month_networth[[column]], self.networth_color_map,
                             f'networth_pie_{field_abbr}', plot_percentages=True)
-        self.plot_trend_regression(self.networth[column].sum(axis=1), f'{column}', f'networth_trend_{field_abbr}')
+        plot_name = f'networth_trend_{field_abbr}'
+        self.plot_trend_regression(self.networth[column].sum(axis=1), column, plot_name)
+        self.context[plot_name] = InlineImage(self.doc, os.path.join(self.tmpdirname, f'{plot_name}.png'),
+                                              width=Mm(160))
 
     def render_trends(self, column, field_abbr):
         total = get_expenses(self.data, column=column)
@@ -352,14 +352,29 @@ class FinancialReportCreator:
         cats_total = cats_total.unstack(level=-1)
         cats_total = cats_total * -1
         cats_total_column = cats_total[column]
+        if self.context.get('trends') is None:
+            self.context['trends'] = {}
 
+        def add_plot_to_context(arg_cat, arg_plot_name):
+            if self.context['trends'].get(str.lower(arg_cat)) is None:
+                self.context['trends'][str.lower(arg_cat)] = {}
+                self.context['trends'][str.lower(arg_cat)]['title'] = f'{arg_cat} Cost Trend'
+                self.context['trends'][str.lower(arg_cat)]['list'] = "TODO"
+            self.context['trends'][str.lower(arg_cat)][field_abbr] = \
+                InlineImage(self.doc, os.path.join(self.tmpdirname, f'{arg_plot_name}.png'), width=Mm(160))
+
+        # Total trend
         cat = 'Total'
         plot_name = f'trend_{field_abbr}_{str.lower(cat)}'
         self.plot_trend_regression(cats_total_column.sum(axis=1), f'{column} {cat}', plot_name)
-        for cat in get_trend_cats():
+        add_plot_to_context(cat, plot_name)
+
+        # Category trends
+        for cat in self.get_trend_cats():
             plot_name = f'trend_{field_abbr}_{str.lower(cat)}'
             color = self.norm_color_map.loc[cat, 'color']
             self.plot_trend_regression(cats_total_column[cat], f'{column} {cat}', plot_name, color=color)
+            add_plot_to_context(cat, plot_name)
 
     def render_trend_balance(self, column, field_abbr):
         def render_trend_balance_separate(costs_merged, suffix):
@@ -454,6 +469,9 @@ class FinancialReportCreator:
                 self.render_trend_balance(column, field_abbr)
                 self.render_top_expenses(column, field_abbr)
 
+            # Turn trends into a list of dicts
+            self.context['trends'] = [v for k, v in self.context['trends'].items()]
+
             self.doc.render(self.context)
             self.doc.save(os.path.join(self.reports_dir, f"Report_{year}_{month}.docx"))
 
@@ -467,7 +485,7 @@ if __name__ == '__main__':
     networth_name = 'networth.xlsx'
     color_mapping_name = 'color_mapping.xlsx'
     template_name = 'report_template.docx'
-    month = 6
+    month = 7
     year = 2023
     people = [('Tabea', 'ta'), ('Nick', 'ni')]
 
