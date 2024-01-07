@@ -123,6 +123,10 @@ class FinancialReportCreator:
     def get_trend_cats(self):
         return list(self.norm_color_map[self.norm_color_map['show_trend'] == True].index)
 
+    def get_cleaned_data(self, data):
+        clean_cats = self.tricount_color_map[self.tricount_color_map['consider_in_cleaned'] == True].index
+        return data[data['Category'].isin(clean_cats)]
+
     def read_networth_data(self, file_name):
         dfs = []
         names = [name for name, _ in self.people]
@@ -160,6 +164,9 @@ class FinancialReportCreator:
         """
 
         df = pd.read_csv(os.path.join(self.data_dir, filename))
+        # Replace &amp; with & in column names and data
+        df.columns = df.columns.str.replace('&amp;', '&')
+        df = df.replace('&amp;', '&', regex=True)
         # Delete last row (Tricount export info)
         df = df[:-1]
 
@@ -430,6 +437,8 @@ class FinancialReportCreator:
             df = df.apply(mark_rows, axis=1)
             df = df.reset_index(drop=True)
             df = df.sort_values(column)
+            # Filter out rows containing "Miete"
+            df = df[~df['Title'].str.contains('Miete')]
             return df[:n].to_dict(orient='records')
 
         self.context[f'top_expenses_{field_abbr}_tot'] = sort_drop_dup_take_first_n_to_dict(self.data)
@@ -455,11 +464,30 @@ class FinancialReportCreator:
 
             for column, field_abbr in self.analysis_columns:
                 income_month_data = get_incomes(self.month_data, column=column)
+                income_year_data = get_incomes(self.year_data, column=column)
+                income_data = get_incomes(self.data, column=column)
+                income_month_cleaned = self.get_cleaned_data(income_month_data)
+                income_year_cleaned = self.get_cleaned_data(income_year_data)
+                income_cleaned = self.get_cleaned_data(income_data)
                 expense_month_data = get_expenses(self.month_data, column=column)
+                expense_year_data = get_expenses(self.year_data, column=column)
+                expense_data = get_expenses(self.data, column=column)
+
                 self.context[f'income_{field_abbr}_m'] = np.round(income_month_data[column].sum(), 2)
-                self.context[f'balance_{field_abbr}_m'] = np.round(self.month_data[column].sum(), 2)
-                self.context[f'balance_{field_abbr}_y'] = np.round(self.year_data[column].sum(), 2)
-                self.context[f'balance_{field_abbr}_tot'] = np.round(self.data[column].sum(), 2)
+                self.context[f'income_{field_abbr}_y'] = np.round(income_year_data[column].sum(), 2)
+                self.context[f'income_{field_abbr}_tot'] = np.round(income_data[column].sum(), 2)
+                self.context[f'income_cleaned_{field_abbr}_m'] = np.round(income_month_cleaned[column].sum(), 2)
+                self.context[f'income_cleaned_{field_abbr}_y'] = np.round(income_year_cleaned[column].sum(), 2)
+                self.context[f'income_cleaned_{field_abbr}_tot'] = np.round(income_cleaned[column].sum(), 2)
+                self.context[f'balance_{field_abbr}_m'] = np.round(income_month_data[column].sum()+expense_month_data[column].sum(), 2)
+                self.context[f'balance_{field_abbr}_y'] = np.round(income_year_data[column].sum()+expense_year_data[column].sum(), 2)
+                self.context[f'balance_{field_abbr}_tot'] = np.round(income_data[column].sum()+expense_data[column].sum(), 2)
+                self.context[f'balance_cleaned_{field_abbr}_m'] = np.round(income_month_cleaned[column].sum()+expense_month_data[column].sum(), 2)
+                self.context[f'balance_cleaned_{field_abbr}_y'] = np.round(income_year_cleaned[column].sum()+expense_year_data[column].sum(), 2)
+                self.context[f'balance_cleaned_{field_abbr}_tot'] = np.round(income_cleaned[column].sum()+expense_data[column].sum(), 2)
+                self.context[f'expense_{field_abbr}_m'] = np.round(expense_month_data[column].sum(), 2)
+                self.context[f'expense_{field_abbr}_y'] = np.round(expense_year_data[column].sum(), 2)
+                self.context[f'expense_{field_abbr}_tot'] = np.round(expense_data[column].sum(), 2)
 
                 self.render_sankey(column, field_abbr, income_month_data, expense_month_data)
                 self.render_expenses(column, field_abbr, expense_month_data)
@@ -485,7 +513,7 @@ if __name__ == '__main__':
     networth_name = 'networth.xlsx'
     color_mapping_name = 'color_mapping.xlsx'
     template_name = 'report_template.docx'
-    month = 7
+    month = 12
     year = 2023
     people = [('Tabea', 'ta'), ('Nick', 'ni')]
 
