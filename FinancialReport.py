@@ -69,8 +69,8 @@ class FinancialReportCreator:
         self.people = people
         self.analysis_columns = people + [('Total', 'tot')]
         self.tmpdirname = None
-        self.context = {'current_month': str(month),
-                        'current_year': str(year),
+        self.context = {'current_month': f"{month:02}",
+                        'current_year': f"{year}",
                         'person1_name': people[0][0],
                         'person2_name': people[1][0]}
         self.doc = DocxTemplate(template_name)
@@ -273,7 +273,7 @@ class FinancialReportCreator:
         ax.patch.set_alpha(0.05)
         plt.legend()
         plt.title(title)
-        plt.xticks(rotation=45)
+        plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
 
         fig.savefig(os.path.join(self.tmpdirname, f'{plot_name}.png'), facecolor=fig.get_facecolor(), edgecolor='none')
@@ -398,7 +398,7 @@ class FinancialReportCreator:
                 else:
                     ax.annotate(str(round(p.get_height(), 2)), (p.get_x(), p.get_height() - 200))
 
-            plt.xticks(rotation=45)
+            plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
 
             name = f'trend_balance_{field_abbr}_{suffix}'
@@ -439,6 +439,13 @@ class FinancialReportCreator:
             df = df.sort_values(column)
             # Filter out rows containing "Miete"
             df = df[~df['Title'].str.contains('Miete')]
+
+            # Rename columns in analysis_columns
+            cols = df.columns
+            for col, abbr in self.analysis_columns:
+                if col in cols:
+                    df = df.rename(columns={col: abbr})
+
             return df[:n].to_dict(orient='records')
 
         self.context[f'top_expenses_{field_abbr}_tot'] = sort_drop_dup_take_first_n_to_dict(self.data)
@@ -501,20 +508,20 @@ class FinancialReportCreator:
             self.context['trends'] = [v for k, v in self.context['trends'].items()]
 
             self.doc.render(self.context)
-            self.doc.save(os.path.join(self.reports_dir, f"Report_{year}_{month}.docx"))
+            self.doc.save(os.path.join(self.reports_dir, f"Report_{self.year}_{self.month:02}.docx"))
 
 
 if __name__ == '__main__':
-    base_dir = 'C:\\Users\\Nick\\OneDrive\\Dokumente\\Persönlich\\Buntentor\\02_Financials\\01_monthly\\'
-    reports_dir = base_dir + 'reports\\'
-    data_dir = base_dir + 'data\\'
-    excel_dir = base_dir + 'excel_exports\\'
+    base_dir = '/mnt/c/Users/NHaup/OneDrive/Dokumente/Persönlich/Buntentor/02_Financials/01_monthly/'
+    reports_dir = base_dir + 'reports/'
+    data_dir = base_dir + 'data/'
+    excel_dir = base_dir + 'excel_exports/'
     csv_name = 'Tricount_BuntentorAxiom.csv'
     networth_name = 'networth.xlsx'
     color_mapping_name = 'color_mapping.xlsx'
-    template_name = 'report_template.docx'
-    month = 12
-    year = 2023
+    template_name = 'Report_Template.docx'
+    month = 1
+    year = 2024
     people = [('Tabea', 'ta'), ('Nick', 'ni')]
 
     fr_creator = FinancialReportCreator(data_dir, csv_name, networth_name, color_mapping_name, template_name, month,
