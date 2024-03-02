@@ -1,7 +1,6 @@
 name: MonthlyFinancialReport
 channels:
   - defaults
-  - conda-forge
 dependencies:
   - python=3.8
   - docxtpl
@@ -12,5 +11,4 @@ dependencies:
   - python-docx
   - scikit-learn
   - openpyxl
-  - conda-forge::kaleido-core
 prefix: /home/nick/miniconda3/envs/MonthlyFinancialReport

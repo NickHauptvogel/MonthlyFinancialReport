@@ -349,7 +349,15 @@ class FinancialReportCreator:
         self.plot_pie_chart(column, self.month_networth[[column]], self.networth_color_map,
                             f'networth_pie_{field_abbr}', plot_percentages=True)
         plot_name = f'networth_trend_{field_abbr}'
-        self.plot_trend_regression(self.networth[column].sum(axis=1), column, plot_name)
+
+        fig = plt.figure(figsize=(12, 4))
+        ax = fig.add_subplot(111)
+        self.networth[column].plot.area(ax=ax)
+        plt.legend(loc='upper left')
+        plt.xticks(rotation=45, ha='right')
+        plt.title(column)
+        plt.tight_layout()
+        fig.savefig(os.path.join(self.tmpdirname, f'{plot_name}.png'))
         self.context[plot_name] = InlineImage(self.doc, os.path.join(self.tmpdirname, f'{plot_name}.png'),
                                               width=Mm(160))
 
@@ -520,7 +528,7 @@ if __name__ == '__main__':
     networth_name = 'networth.xlsx'
     color_mapping_name = 'color_mapping.xlsx'
     template_name = 'Report_Template.docx'
-    month = 1
+    month = 2
     year = 2024
     people = [('Tabea', 'ta'), ('Nick', 'ni')]
 
