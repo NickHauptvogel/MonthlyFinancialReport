@@ -11,6 +11,10 @@ import plotly.graph_objects as go
 from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 
+import logging
+
+from NotionConnection import NotionConnection
+
 
 def hex_to_rgba(hex: str, opacity=1.0):
     hex = hex.lstrip('#')
@@ -44,8 +48,8 @@ class FinancialReportCreator:
 
     def __init__(self,
                  data_dir,
-                 tricount_csv_name,
-                 networth_xlsx_name,
+                 notion_entries,
+                 networth,
                  color_mapping_xlsx_name,
                  template_name,
                  month,
@@ -76,8 +80,8 @@ class FinancialReportCreator:
         self.doc = DocxTemplate(template_name)
         self.norm_color_map, self.tricount_color_map, self.networth_color_map = \
             self.read_color_map(color_mapping_xlsx_name, parent_category_sheet, tricount_sheet, networth_sheet)
-        self.networth = self.read_networth_data(networth_xlsx_name)
-        self.data = self.read_tricount_data(tricount_csv_name)
+        self.networth = self.process_networth_data(networth)
+        self.data = self.concat_notion_with_archive(notion_entries, data_dir)
 
         # Get the earliest date
         earliest_date = self.data['Date_Time'].min()
@@ -127,81 +131,89 @@ class FinancialReportCreator:
         clean_cats = self.tricount_color_map[self.tricount_color_map['consider_in_cleaned'] == True].index
         return data[data['Category'].isin(clean_cats)]
 
-    def read_networth_data(self, file_name):
-        dfs = []
+    def process_networth_data(self, df_networth):
         names = [name for name, _ in self.people]
         for name in names:
-            df = pd.read_excel(os.path.join(self.data_dir, file_name), sheet_name=name)
-            df = df.rename(columns={"Value": name})
-            dfs.append(df)
+            df_networth[name] = df_networth.apply(lambda row: row['Value'] if row['Person'] == name else 0, axis=1)
 
-        # Stack dataframes
-        df = pd.concat(dfs).reset_index(drop=True)
-        df = df.fillna(0)
-        df['Total'] = df[names].sum(axis=1)
+        df_networth['Total'] = df_networth[names].sum(axis=1)
 
         group_dict = {'Total': 'sum'}
         group_dict.update({name: 'sum' for name, _ in self.people})
-        cats_total = df.groupby(['Year', 'Month', 'Category']).agg(group_dict)
+        cats_total = df_networth.groupby(['Year', 'Month', 'Category']).agg(group_dict)
         cats_total = cats_total.unstack(level=-1)
 
         return cats_total
 
-    def read_tricount_data(self, filename) -> pd.DataFrame:
-        """
-        Reads and returns dataframe in following format:
-        Title: Title of expense / income
-        Total: Total amount spent (negative) or received (positive)
-        Category: Category of expense
-        Person1: Person 1s amount spent (negative) or received (positive)
-        Person2: Person 2s amount spent (negative) or received (positive)
-        Date_Time: Timestamp
-        Month: Number of month
-        Year: Number of year
+    def concat_notion_with_archive(self, notion_entries, data_dir) -> pd.DataFrame:
 
-        :param filename: filename
-        :return: pd.Dataframe
-        """
+        # List all files in data_dir/archive
+        files = os.listdir(os.path.join(data_dir, 'archive'))
+        # Filter out all files that are not csv files
+        files = [file for file in files if file.endswith('.xlsx')]
+        # Open, read and concat all files
+        data = pd.concat([pd.read_excel(os.path.join(data_dir, 'archive', file)) for file in files])
+        # Drop Category_Norm column and Date column as they will be recalculated later
+        data = data.drop(columns=['Category_Norm', 'Date'])
 
-        df = pd.read_csv(os.path.join(self.data_dir, filename))
-        # Replace &amp; with & in column names and data
-        df.columns = df.columns.str.replace('&amp;', '&')
-        df = df.replace('&amp;', '&', regex=True)
-        # Delete last row (Tricount export info)
-        df = df[:-1]
+        # Process notion entries
+        notion_entries = notion_entries.rename(columns={'Payer/Payee': 'Paid by', 'Receipt': 'Attachment URL'})
 
-        df['Date_Time'] = pd.to_datetime(df['Date & time'])
-        df['Month'] = df['Date_Time'].dt.month
-        df['Year'] = df['Date_Time'].dt.year
+        def process_notion_row(row):
+            if row['Type'] == 'Expense':
+                for name, _ in self.people:
+                    if row[name] != 0:
+                        row[name] *= -1
+                if row['Total'] != 0:
+                    row['Total'] *= -1
 
-        names = [name for name, _ in self.people]
-
-        # Drop unnecessary columns
-        df = df.drop(
-            columns=['Amount', 'Currency', 'Exchange rate', 'Attachment URL', 'Paid by', 'Date & time']
-                    + ['Paid by ' + name for name in names])
-        # Normalize column names
-        df = df.rename(columns={"Amount in default currency (EUR)": "Total"})
-        df['Total'] = df['Total'] * -1  # Tricount shows expenses as positive values
-
-        for name in names:
-            df = df.rename(columns={f"Impacted to {name}": f"{name}"})
-
-        # Handle direct transactions
-        def f(row):
-            if row['Transaction type'] == 'Money transfer':
-                for name in names:
-                    if row[name] == 0.0:
-                        row[name] = -1 * row['Total']
-                        break
-                row['Total'] = 0.0
+            # Money Transfers
+            if row['Type'] == 'Money Transfer':
+                amount = row['Total']
+                for name, _ in self.people:
+                    if row['Paid by'] == name:
+                        row[name] = amount
+                    else:
+                        row[name] = -amount
+                row['Total'] = 0
 
             return row
 
-        df = df.apply(f, axis=1)
-        df = df.drop(columns=['Transaction type'])
+        notion_entries = notion_entries.apply(process_notion_row, axis=1)
+        # Check whether Special Currency has any values
+        if notion_entries['Special Currency'].notnull().any():
+            # Exit
+            logging.error('Special Currency column has values. Please remove them.')
+            exit(1)
+        # Drop columns
+        notion_entries = notion_entries.drop(columns=['Type', 'Reoccurrence', 'Page_ID', 'Special Currency'])
+        # Make sure columns match
+        assert sorted(notion_entries.columns.tolist()) == sorted(data.columns.tolist()), 'Columns do not match: ' + str(
+            sorted(notion_entries.columns.tolist())) + ' vs. ' + str(sorted(data.columns.tolist()))
+        # Concat data and notion_entries
+        data = pd.concat([data, notion_entries])
 
-        return df
+        # Remove tzinfo from Date_Time
+        data['Date_Time'] = data['Date_Time'].apply(lambda x: x.replace(tzinfo=None))
+
+        # Calculate saldo
+        def calculate_saldo(row):
+            for name, _ in self.people:
+                opposite_name = [n for n, _ in self.people if n != name][0] # Assume 2 people
+                if row['Paid by'] == name:
+                    row['Saldo' + name] = -row[opposite_name]
+                else:
+                    row['Saldo' + name] = row[name]
+            return row
+        data = data.apply(calculate_saldo, axis=1)
+        for name, _ in self.people:
+            # Print the sum of the saldo
+            logging.info(f"Saldo {name}: {data['Saldo' + name].sum()}")
+
+        # Delete all money transfers from data as they are not incomes or expenses
+        data = data[data['Category'] != 'Money Transfer']
+
+        return data
 
     def normalize_categories(self):
         urlaub_set = set()
@@ -520,7 +532,7 @@ class FinancialReportCreator:
 
 
 if __name__ == '__main__':
-    base_dir = '/mnt/c/Users/NHaup/OneDrive/Dokumente/Persönlich/Buntentor/02_Financials/01_monthly/'
+    base_dir = "/mnt/c/Users/NHaup/OneDrive/Dokumente/Persönlich/Buntentor/02_Financials/01_monthly/"
     reports_dir = base_dir + 'reports/'
     data_dir = base_dir + 'data/'
     excel_dir = base_dir + 'excel_exports/'
@@ -528,10 +540,14 @@ if __name__ == '__main__':
     networth_name = 'networth.xlsx'
     color_mapping_name = 'color_mapping.xlsx'
     template_name = 'Report_Template.docx'
-    month = 2
+    month = 8
     year = 2024
     people = [('Tabea', 'ta'), ('Nick', 'ni')]
 
-    fr_creator = FinancialReportCreator(data_dir, csv_name, networth_name, color_mapping_name, template_name, month,
-                                        year, reports_dir, excel_dir, people)
+    logging.basicConfig(level=logging.INFO)
+    notion = NotionConnection(os.environ.get("NOTION_TOKEN"), os.environ.get("NOTION_DATABASE_ID"), os.environ.get("NOTION_NETWORTH_ID"))
+    notion.get_all_entries()
+    notion.get_networth()
+
+    fr_creator = FinancialReportCreator(data_dir, notion.all_entries, notion.networth, color_mapping_name, template_name, month, year, reports_dir, excel_dir, people)
     fr_creator.create_report()
